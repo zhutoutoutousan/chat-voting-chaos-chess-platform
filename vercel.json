@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "buildCommand": "prisma generate && nest build",
+  "buildCommand": "nest build",
   "builds": [
     {
       "src": "src/main.ts",
