@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { Socket } from 'socket.io';
 import { PrismaService } from '../prisma/prisma.service';
+import { CreateLobbyDto } from './dto/create-lobby.dto';
 
 @Injectable()
 export class LobbyService {
