@@ -20,8 +20,5 @@
         "OPTIONS"
       ]
     }
-  ],
-  "env": {
-    "DATABASE_URL": "@DATABASE_URL"
-  }
+  ]
 }
