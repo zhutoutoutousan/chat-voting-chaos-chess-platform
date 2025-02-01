@@ -1,13 +1,24 @@
 import { Injectable } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { User } from '../entities/user.entity';
+import { Game } from '../entities/game.entity';
+import { Player } from '../entities/player.entity';
+import { Lobby } from '../entities/lobby.entity';
 import { Socket } from 'socket.io';
-import { PrismaService } from '../prisma/prisma.service';
+import { CreateLobbyDto } from './dto/create-lobby.dto';
 
 @Injectable()
 export class LobbyService {
   private connections = new Map<string, Socket>();
   private matchmakingQueue = new Map<string, { rating: number; timestamp: number }>();
 
-  constructor(private prisma: PrismaService) {
+  constructor(
+    @InjectRepository(User) private userRepo: Repository<User>,
+    @InjectRepository(Game) private gameRepo: Repository<Game>,
+    @InjectRepository(Player) private playerRepo: Repository<Player>,
+    @InjectRepository(Lobby) private lobbyRepo: Repository<Lobby>,
+  ) {
     // Check matchmaking queue periodically
     setInterval(() => this.processMatchmakingQueue(), 5000);
   }
@@ -21,55 +32,39 @@ export class LobbyService {
   }
 
   async createLobby(userId: string, data: CreateLobbyDto) {
-    const lobby = await this.prisma.lobby.create({
-      data: {
-        hostId: userId,
-        timeControl: data.timeControl,
-        mode: data.mode,
-      },
-      include: {
-        host: true,
-      },
-    });
+    const lobby = await this.lobbyRepo.save(this.lobbyRepo.create({
+      hostId: userId,
+      timeControl: data.timeControl,
+      mode: data.mode,
+    }));
     return lobby;
   }
 
   async joinLobby(userId: string, lobbyId: string) {
-    const lobby = await this.prisma.lobby.findUnique({
+    const lobby = await this.lobbyRepo.findOne({
       where: { id: lobbyId },
-      include: { host: true },
+      relations: ['host'],
     });
 
     if (!lobby) throw new Error('Lobby not found');
 
     // Create a new game
-    const game = await this.prisma.game.create({
-      data: {
-        whiteId: lobby.hostId,
-        blackId: userId,
-        timeControl: lobby.timeControl,
-        mode: lobby.mode,
-      },
-      include: {
-        white: true,
-        black: true,
-      },
-    });
+    const game = await this.createGame(lobby.hostId, userId);
 
     // Delete the lobby
-    await this.prisma.lobby.delete({ where: { id: lobbyId } });
+    await this.lobbyRepo.remove(lobby);
 
     return game;
   }
 
   async addToMatchmaking(userId: string) {
-    const user = await this.prisma.user.findUnique({
+    const user = await this.userRepo.findOne({
       where: { id: userId },
-      select: { rating: true },
+      select: ['rating'],
     });
 
     this.matchmakingQueue.set(userId, {
-      rating: user.rating,
+      rating: user!.rating,
       timestamp: Date.now(),
     });
   }
@@ -115,24 +110,16 @@ export class LobbyService {
     }
   }
 
-  private async createGame(player1Id: string, player2Id: string) {
-    // Randomly assign colors
-    const isPlayer1White = Math.random() > 0.5;
-    const [whiteId, blackId] = isPlayer1White 
-      ? [player1Id, player2Id]
-      : [player2Id, player1Id];
+  async createGame(player1Id: string, player2Id: string) {
+    const game = this.gameRepo.create();
+    await this.gameRepo.save(game);
 
-    return await this.prisma.game.create({
-      data: {
-        whiteId,
-        blackId,
-        timeControl: '10+0', // Default time control
-        mode: 'Rated',
-      },
-      include: {
-        white: true,
-        black: true,
-      },
-    });
+    const players = [
+      this.playerRepo.create({ userId: player1Id, color: 'white', game }),
+      this.playerRepo.create({ userId: player2Id, color: 'black', game }),
+    ];
+    await this.playerRepo.save(players);
+
+    return game;
   }
 } 

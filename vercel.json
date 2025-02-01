@@ -1,5 +1,6 @@
 {
   "version": 2,
+  "buildCommand": "prisma generate && nest build",
   "builds": [
     {
       "src": "src/main.ts",
@@ -19,5 +20,8 @@
         "OPTIONS"
       ]
     }
-  ]
+  ],
+  "env": {
+    "DATABASE_URL": "@database_url"
+  }
 }
