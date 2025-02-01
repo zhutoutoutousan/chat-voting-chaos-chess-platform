@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConfigModule } from '@nestjs/config';
+import { AppController } from './app.controller';
+import { AppService } from './app.service';
 import { LobbyModule } from './lobby/lobby.module';
 import { User } from './entities/user.entity';
 import { Game } from './entities/game.entity';
@@ -25,5 +27,7 @@ import { Lobby } from './entities/lobby.entity';
     }),
     LobbyModule,
   ],
+  controllers: [AppController],
+  providers: [AppService],
 })
 export class AppModule {}
