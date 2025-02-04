@@ -1,8 +1,34 @@
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
+import { IoAdapter } from '@nestjs/platform-socket.io';
+
+class CustomIoAdapter extends IoAdapter {
+  createIOServer(port: number, options?: any) {
+    const server = super.createIOServer(port, {
+      ...options,
+      cors: {
+        origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+        credentials: true,
+      },
+      path: '/socket.io',
+      transports: ['websocket', 'polling'],
+      pingInterval: 25000,
+      pingTimeout: 20000,
+    });
+    return server;
+  }
+}
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+  
+  app.enableCors({
+    origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+    credentials: true,
+  });
+
+  app.useWebSocketAdapter(new CustomIoAdapter(app));
+
   await app.listen(process.env.PORT ?? 3001);
 }
 bootstrap();

@@ -1,28 +1,21 @@
-import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, OneToMany } from 'typeorm';
+import { Entity, PrimaryGeneratedColumn, Column, ManyToOne } from 'typeorm';
 import { User } from './user.entity';
 import { Game } from './game.entity';
-import { Move } from './move.entity';
 
 @Entity()
 export class Player {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @Column()
+  @Column({ type: 'varchar' })
   userId: string;
 
   @Column()
-  gameId: string;
-
-  @Column()
-  color: string;
+  color: 'white' | 'black';
 
   @ManyToOne(() => User, user => user.players)
   user: User;
 
   @ManyToOne(() => Game, game => game.players)
   game: Game;
-
-  @OneToMany(() => Move, move => move.player)
-  moves: Move[];
 } 

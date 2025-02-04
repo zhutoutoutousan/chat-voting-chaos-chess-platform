@@ -1,28 +1,24 @@
-import { Entity, PrimaryGeneratedColumn, Column, OneToMany } from 'typeorm';
-import { Lobby } from './lobby.entity';
+import { Entity, PrimaryColumn, Column, OneToMany } from 'typeorm';
 import { Player } from './player.entity';
-import { Game } from './game.entity';
+import { Lobby } from './lobby.entity';
 
 @Entity()
 export class User {
-  @PrimaryGeneratedColumn('uuid')
+  @PrimaryColumn({ type: 'varchar' })
   id: string;
 
-  @Column({ unique: true })
+  @Column()
+  username: string;
+
+  @Column()
   email: string;
 
-  @Column({ nullable: true })
-  name: string;
-
-  @Column({ default: 1500 })
+  @Column({ default: 1200 })
   rating: number;
-
-  @OneToMany(() => Lobby, lobby => lobby.host)
-  hostedLobbies: Lobby[];
-
-  @OneToMany(() => Game, game => game.user)
-  games: Game[];
 
   @OneToMany(() => Player, player => player.user)
   players: Player[];
+
+  @OneToMany(() => Lobby, lobby => lobby.host)
+  hostedLobbies: Lobby[];
 } 
