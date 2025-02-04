@@ -18,7 +18,11 @@ import { CreateLobbyDto } from './dto/create-lobby.dto';
   cors: {
     origin: process.env.FRONTEND_URL || 'http://localhost:3000',
     credentials: true,
-  }
+    methods: ["GET", "POST"],
+    allowedHeaders: ["my-custom-header", "Authorization"],
+  },
+  path: '/socket.io',
+  transports: ['websocket'],
 })
 @UseGuards(WsAuthGuard)
 export class LobbyGateway implements OnGatewayConnection, OnGatewayDisconnect {
