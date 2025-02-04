@@ -10,13 +10,19 @@ class CustomIoAdapter extends IoAdapter {
         origin: process.env.FRONTEND_URL || 'http://localhost:3000',
         credentials: true,
         methods: ["GET", "POST"],
-        allowedHeaders: ["my-custom-header"],
+        allowedHeaders: ["my-custom-header", "Authorization"],
       },
       allowEIO3: true,
       path: '/socket.io',
       transports: ['websocket'],
       pingInterval: 25000,
       pingTimeout: 20000,
+      cookie: {
+        name: "io",
+        httpOnly: true,
+        sameSite: "strict",
+        secure: process.env.NODE_ENV === 'production'
+      }
     });
     return server;
   }
