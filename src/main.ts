@@ -9,9 +9,12 @@ class CustomIoAdapter extends IoAdapter {
       cors: {
         origin: process.env.FRONTEND_URL || 'http://localhost:3000',
         credentials: true,
+        methods: ["GET", "POST"],
+        allowedHeaders: ["my-custom-header"],
       },
+      allowEIO3: true,
       path: '/socket.io',
-      transports: ['websocket', 'polling'],
+      transports: ['websocket'],
       pingInterval: 25000,
       pingTimeout: 20000,
     });
@@ -25,10 +28,12 @@ async function bootstrap() {
   app.enableCors({
     origin: process.env.FRONTEND_URL || 'http://localhost:3000',
     credentials: true,
+    methods: ['GET', 'POST', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
   });
 
   app.useWebSocketAdapter(new CustomIoAdapter(app));
 
-  await app.listen(process.env.PORT ?? 3001);
+  await app.listen(process.env.PORT || 3001);
 }
 bootstrap();
