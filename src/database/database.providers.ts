@@ -17,10 +17,15 @@ export const databaseProviders = [
             rejectUnauthorized: false
           },
           extra: {
-            max: 20,
-            idleTimeoutMillis: 30000,
-            connectionTimeoutMillis: 2000,
+            max: 1,
+            idleTimeoutMillis: 10000,
+            connectTimeoutMS: 5000,
+            keepalive: true,
+            keepaliveInitialDelayMillis: 10000
           },
+          poolSize: 1,
+          connectTimeoutMS: 5000,
+          maxQueryExecutionTime: 5000,
           logging: ['error', 'warn'],
         });
         

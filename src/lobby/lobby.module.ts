@@ -9,13 +9,18 @@ import { Game } from '../entities/game.entity';
 import { Player } from '../entities/player.entity';
 import { Lobby } from '../entities/lobby.entity';
 import { WsAuthGuard } from '../auth/ws-auth.guard';
+import { LobbyController } from './lobby.controller';
+import { GameModule } from '../game/game.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([User, Game, Player, Lobby]),
     AuthModule,
-    ConfigModule
+    ConfigModule,
+    GameModule
   ],
+  controllers: [LobbyController],
   providers: [LobbyGateway, LobbyService, WsAuthGuard],
+  exports: [LobbyService],
 })
 export class LobbyModule {} 
