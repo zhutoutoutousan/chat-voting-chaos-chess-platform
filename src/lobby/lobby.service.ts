@@ -382,10 +382,10 @@ export class LobbyService {
         throw new Error('Game can only be started from waiting state');
       }
 
-      // Create a new game
+      // Create a new game with proper null handling for blackId
       const game = await this.gameService.createGame({
         whiteId: lobby.hostId,
-        blackId: lobby.guestId, // We need to add this field to Lobby entity
+        blackId: lobby.guestId || null,  // Convert undefined to null
         timeControl: lobby.timeControl,
         mode: lobby.mode
       });
