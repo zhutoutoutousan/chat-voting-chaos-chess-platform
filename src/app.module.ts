@@ -20,12 +20,14 @@ import { ScheduleModule } from '@nestjs/schedule';
       type: 'postgres',
       url: process.env.DATABASE_URL,
       entities: [User, Game, Player, Move, Lobby],
-      synchronize: true,
+      synchronize: process.env.NODE_ENV !== 'production',
       ssl: {
         rejectUnauthorized: false
       },
       extra: {
-        ssl: false
+        max: 20,
+        idleTimeoutMillis: 30000,
+        connectionTimeoutMillis: 2000,
       }
     }),
     LobbyModule,
