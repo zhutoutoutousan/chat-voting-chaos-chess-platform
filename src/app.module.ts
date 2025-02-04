@@ -9,10 +9,13 @@ import { Game } from './entities/game.entity';
 import { Player } from './entities/player.entity';
 import { Move } from './entities/move.entity';
 import { Lobby } from './entities/lobby.entity';
+import { ScheduleModule } from '@nestjs/schedule';
 
 @Module({
   imports: [
-    ConfigModule.forRoot(),
+    ConfigModule.forRoot({
+      isGlobal: true,
+    }),
     TypeOrmModule.forRoot({
       type: 'postgres',
       url: process.env.DATABASE_URL,
@@ -26,6 +29,7 @@ import { Lobby } from './entities/lobby.entity';
       }
     }),
     LobbyModule,
+    ScheduleModule.forRoot(),
   ],
   controllers: [AppController],
   providers: [AppService],

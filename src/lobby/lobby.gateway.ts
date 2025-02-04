@@ -14,9 +14,11 @@ import { WsAuthGuard } from '../auth/ws-auth.guard';
 import { CreateLobbyDto } from './dto/create-lobby.dto';
 
 @WebSocketGateway({
+  namespace: '/lobby',
   cors: {
     origin: process.env.FRONTEND_URL || 'http://localhost:3000',
-  },
+    credentials: true,
+  }
 })
 @UseGuards(WsAuthGuard)
 export class LobbyGateway implements OnGatewayConnection, OnGatewayDisconnect {
@@ -26,7 +28,8 @@ export class LobbyGateway implements OnGatewayConnection, OnGatewayDisconnect {
   constructor(private readonly lobbyService: LobbyService) {}
 
   async handleConnection(client: Socket) {
-    const userId = client.data.userId;
+    console.log('Client connected:', client.id);
+    const userId = client.handshake.query.userId as string;
     if (!userId) {
       client.disconnect();
       return;
@@ -35,30 +38,61 @@ export class LobbyGateway implements OnGatewayConnection, OnGatewayDisconnect {
   }
 
   async handleDisconnect(client: Socket) {
-    const userId = client.data.userId;
-    if (userId) {
+    try {
+      const userId = client.handshake.query.userId as string;
+      const lobbyId = client.data.lobbyId;
+
+      if (lobbyId) {
+        // Clean up lobby if host disconnects
+        const lobby = await this.lobbyService.getLobby(lobbyId);
+        if (lobby && lobby.hostId === userId) {
+          await this.lobbyService.removeLobby(lobbyId);
+          this.server.emit('lobby_removed', lobbyId);
+        }
+      }
+
       await this.lobbyService.removeConnection(userId);
-      await this.lobbyService.removeFromMatchmaking(userId);
+    } catch (error) {
+      console.error('Disconnect error:', error);
     }
   }
 
   @SubscribeMessage('create_lobby')
   async handleCreateLobby(
     @ConnectedSocket() client: Socket,
-    @MessageBody() data: CreateLobbyDto,
+    @MessageBody() payload: CreateLobbyDto
   ) {
-    const lobby = await this.lobbyService.createLobby(client.data.userId, data);
-    this.server.emit('lobby_created', lobby);
-    return lobby;
+    console.log('Received create_lobby event:', { clientId: client.id, payload });
+    try {
+      const userId = client.data.userId;
+      if (!userId) {
+        throw new Error('User ID is required');
+      }
+
+      const lobby = await this.lobbyService.createLobby(userId, payload);
+      
+      // Broadcast to all clients
+      this.server.emit('lobby_created', lobby);
+      
+      // Send acknowledgment to creator
+      return { event: 'create_lobby', data: { success: true, lobby } };
+    } catch (error) {
+      console.error('Create lobby error:', error);
+      return { event: 'create_lobby', data: { success: false, error: error.message } };
+    }
   }
 
   @SubscribeMessage('join_lobby')
-  async handleJoinLobby(
-    @ConnectedSocket() client: Socket,
-    @MessageBody() data: { lobbyId: string },
-  ) {
-    const game = await this.lobbyService.joinLobby(client.data.userId, data.lobbyId);
-    this.server.emit('game_started', game);
+  async handleJoinLobby(client: Socket, payload: { lobbyId: string }) {
+    const userId = client.handshake.query.userId as string;
+    const game = await this.lobbyService.joinLobby(userId, payload.lobbyId);
+    
+    // Notify about game creation
+    client.emit('game_created', game.id);
+    
+    // Notify about lobby removal
+    this.server.emit('lobby_removed', payload.lobbyId);
+    
     return game;
   }
 
