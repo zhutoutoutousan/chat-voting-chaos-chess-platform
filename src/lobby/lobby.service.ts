@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { User } from '../entities/user.entity';
@@ -9,9 +9,11 @@ import { Socket } from 'socket.io';
 import { CreateLobbyDto } from './dto/create-lobby.dto';
 import { Cron } from '@nestjs/schedule';
 import { LessThan } from 'typeorm';
+import { GameService } from '../game/game.service';
 
 @Injectable()
 export class LobbyService {
+  private readonly logger = new Logger(LobbyService.name);
   private connections = new Map<string, Socket>();
   private matchmakingQueue = new Map<string, { rating: number; timestamp: number }>();
 
@@ -20,6 +22,7 @@ export class LobbyService {
     @InjectRepository(Game) private gameRepo: Repository<Game>,
     @InjectRepository(Player) private playerRepo: Repository<Player>,
     @InjectRepository(Lobby) private lobbyRepo: Repository<Lobby>,
+    private gameService: GameService
   ) {
     // Check matchmaking queue periodically
     setInterval(() => this.processMatchmakingQueue(), 5000);
@@ -37,90 +40,79 @@ export class LobbyService {
     socket.emit('debug', { message, data, timestamp: new Date().toISOString() });
   }
 
-  async createLobby(userId: string, data: CreateLobbyDto) {
+  async createLobby(userId: string, data: CreateLobbyDto): Promise<Lobby> {
+    const existingLobby = await this.findLobbyByHostId(userId);
+    if (existingLobby) {
+      throw new Error('User already has an active lobby');
+    }
+
+    const lobby = this.lobbyRepo.create({
+      hostId: userId,
+      mode: data.mode,
+      timeControl: data.timeControl,
+      status: 'waiting',
+      expiresAt: new Date(Date.now() + 30 * 60 * 1000), // Expires in 30 minutes
+    });
+
     try {
-      // Check if user exists, if not create them
-      let user = await this.userRepo.findOne({ where: { id: userId } });
-      
-      if (!user) {
-        user = this.userRepo.create({
-          id: userId,
-          username: `Player_${userId.slice(-6)}`,
-          email: '',
-        });
-        await this.userRepo.save(user);
-      }
-
-      // Check for existing active lobby
-      const existingLobby = await this.lobbyRepo.findOne({
-        where: { 
-          hostId: userId,
-          status: 'waiting'
-        }
-      });
-
-      if (existingLobby) {
-        throw new Error('User already has an active lobby');
-      }
-
-      // Create new lobby
-      const lobby = this.lobbyRepo.create({
-        hostId: userId,
-        timeControl: data.timeControl,
-        mode: data.mode,
-        status: 'waiting',
-        expiresAt: new Date(Date.now() + 30 * 60 * 1000),
-      });
-
-      const savedLobby = await this.lobbyRepo.save(lobby);
-      return savedLobby;
+      await this.lobbyRepo.save(lobby);
+      this.notifyLobbyUpdate();
+      return lobby;
     } catch (error) {
-      console.error('Create lobby error:', error);
-      throw error;
+      this.logger.error('Failed to create lobby:', error);
+      throw new Error('Failed to create lobby');
     }
   }
 
   async joinLobby(userId: string, lobbyId: string) {
+    this.logger.log('Joining lobby:', { userId, lobbyId });
+
     const lobby = await this.lobbyRepo.findOne({
-      where: { id: lobbyId, status: 'waiting' }
+      where: { id: lobbyId },
+      select: {
+        id: true,
+        hostId: true,
+        mode: true,
+        timeControl: true,
+        status: true
+      }
     });
 
     if (!lobby) {
-      throw new Error('Lobby not found or no longer available');
+      throw new Error('Lobby not found');
     }
 
-    if (lobby.hostId === userId) {
-      throw new Error('Cannot join your own lobby');
+    if (lobby.status !== 'waiting') {
+      throw new Error('Lobby is no longer available');
     }
 
-    // Create the game
-    const game = this.gameRepo.create({
+    // Create a new game
+    const game = await this.gameService.createGame({
+      whiteId: lobby.hostId,
+      blackId: userId === lobby.hostId ? null : userId,
       timeControl: lobby.timeControl,
-      mode: lobby.mode,
-      status: 'active',
+      mode: lobby.mode
     });
-    await this.gameRepo.save(game);
 
-    // Create players
-    const players = [
-      this.playerRepo.create({
-        userId: lobby.hostId,
-        color: 'white',
-        game,
-      }),
-      this.playerRepo.create({
-        userId,
-        color: 'black',
-        game,
-      }),
-    ];
-    await this.playerRepo.save(players);
+    // Update lobby status and gameId
+    await this.lobbyRepo.update(lobbyId, { 
+      status: 'active',
+      gameId: game.id
+    });
 
-    // Update lobby status
-    lobby.status = 'game_started';
+    this.logger.log('Game created:', {
+      gameId: game.id,
+      whiteId: game.whiteId,
+      blackId: game.blackId,
+      mode: game.mode
+    });
+
+    // Update lobby with guest info
+    lobby.guestId = userId;
     await this.lobbyRepo.save(lobby);
 
-    return game;
+    this.notifyLobbyUpdate();
+    return lobby;
   }
 
   private notifyLobbyUpdate() {
@@ -134,10 +126,57 @@ export class LobbyService {
   }
 
   async getActiveLobbies() {
-    return this.lobbyRepo.find({
-      where: { status: 'waiting' },
-      order: { createdAt: 'DESC' },
-    });
+    this.logger.log('Fetching active lobbies...');
+    
+    try {
+      // First log the total count of lobbies
+      const totalCount = await this.lobbyRepo.count();
+      this.logger.log(`Total lobbies in database: ${totalCount}`);
+
+      // Get all lobbies first to check what we have
+      const allLobbies = await this.lobbyRepo.find();
+      this.logger.log('All lobbies:', {
+        count: allLobbies.length,
+        lobbies: allLobbies.map(l => ({
+          id: l.id,
+          status: l.status,
+          hostId: l.hostId,
+          createdAt: l.createdAt
+        }))
+      });
+
+      // Now get active lobbies
+      const activeLobbies = await this.lobbyRepo.find({
+        where: { status: 'waiting' },
+        order: { createdAt: 'DESC' },
+        select: {
+          id: true,
+          hostId: true,
+          mode: true,
+          timeControl: true,
+          status: true,
+          createdAt: true
+        }
+      });
+
+      this.logger.log('Active lobbies found:', {
+        count: activeLobbies.length,
+        lobbies: activeLobbies.map(l => ({
+          id: l.id,
+          status: l.status,
+          hostId: l.hostId,
+          createdAt: l.createdAt
+        }))
+      });
+
+      return activeLobbies;
+    } catch (error) {
+      this.logger.error('Error fetching active lobbies:', {
+        error: error.message,
+        stack: error.stack
+      });
+      throw error;
+    }
   }
 
   async addToMatchmaking(userId: string) {
@@ -221,15 +260,19 @@ export class LobbyService {
   // Add a method to clean up expired lobbies
   @Cron('*/5 * * * *') // Run every 5 minutes
   async cleanupExpiredLobbies() {
-    const expiredLobbies = await this.lobbyRepo.find({
-      where: {
-        expiresAt: LessThan(new Date())
-      }
-    });
+    try {
+      const expiredLobbies = await this.lobbyRepo.find({
+        where: {
+          expiresAt: LessThan(new Date()),
+          status: 'waiting'
+        }
+      });
 
-    for (const lobby of expiredLobbies) {
-      await this.lobbyRepo.remove(lobby);
-      this.notifyLobbyUpdate();
+      for (const lobby of expiredLobbies) {
+        await this.removeLobby(lobby.id);
+      }
+    } catch (error) {
+      this.logger.error('Failed to cleanup expired lobbies:', error);
     }
   }
 
@@ -245,6 +288,118 @@ export class LobbyService {
     if (lobby) {
       await this.lobbyRepo.remove(lobby);
       this.notifyLobbyUpdate();
+    }
+  }
+
+  async findLobbyByHostId(userId: string): Promise<Lobby | null> {
+    return this.lobbyRepo.findOne({
+      where: { hostId: userId }
+    });
+  }
+
+  async getAllLobbies() {
+    try {
+      const lobbies = await this.lobbyRepo.find({
+        where: [
+          { status: 'waiting' },
+          { status: 'active' }
+        ],
+        relations: ['host'],
+        order: {
+          createdAt: 'DESC'
+        }
+      });
+
+      return lobbies.map(lobby => ({
+        id: lobby.id,
+        hostId: lobby.hostId,
+        mode: lobby.mode,
+        timeControl: lobby.timeControl,
+        status: lobby.status,
+        createdAt: lobby.createdAt,
+        expiresAt: lobby.expiresAt,
+        hostName: lobby.host?.username || 'Unknown'
+      }));
+    } catch (error) {
+      this.logger.error('Error fetching all lobbies:', {
+        error: error.message,
+        stack: error.stack,
+        timestamp: new Date().toISOString()
+      });
+      throw new Error('Failed to fetch lobbies');
+    }
+  }
+
+  async terminateLobby(lobbyId: string, userId: string) {
+    try {
+      const lobby = await this.lobbyRepo.findOne({
+        where: { id: lobbyId, hostId: userId },
+        relations: ['host']
+      });
+
+      if (!lobby) {
+        throw new Error('Lobby not found or you are not the host');
+      }
+
+      // If lobby is active and has an associated game, end it
+      if (lobby.status === 'active' && lobby.gameId) {
+        const game = await this.gameRepo.findOne({
+          where: { id: lobby.gameId }
+        });
+        if (game) {
+          game.status = 'finished';
+          await this.gameRepo.save(game);
+        }
+      }
+
+      await this.lobbyRepo.remove(lobby);
+      this.notifyLobbyUpdate();
+      
+      return { success: true };
+    } catch (error) {
+      this.logger.error('Failed to terminate lobby:', {
+        error: error.message,
+        lobbyId,
+        userId,
+        timestamp: new Date().toISOString()
+      });
+      throw new Error('Failed to terminate lobby');
+    }
+  }
+
+  async initiateGame(lobbyId: string, userId: string) {
+    try {
+      const lobby = await this.lobbyRepo.findOne({
+        where: { id: lobbyId, hostId: userId },
+        relations: ['host']
+      });
+
+      if (!lobby) {
+        throw new Error('Lobby not found or you are not the host');
+      }
+
+      if (lobby.status !== 'waiting') {
+        throw new Error('Game can only be started from waiting state');
+      }
+
+      // Create a new game
+      const game = await this.gameService.createGame({
+        whiteId: lobby.hostId,
+        blackId: lobby.guestId, // We need to add this field to Lobby entity
+        timeControl: lobby.timeControl,
+        mode: lobby.mode
+      });
+
+      // Update lobby with game info
+      lobby.status = 'active';
+      lobby.gameId = game.id;
+      await this.lobbyRepo.save(lobby);
+
+      this.notifyLobbyUpdate();
+      return game;
+    } catch (error) {
+      this.logger.error('Failed to initiate game:', error);
+      throw new Error('Failed to start game');
     }
   }
 } 

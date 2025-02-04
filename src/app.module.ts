@@ -4,6 +4,7 @@ import { ConfigModule } from '@nestjs/config';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { LobbyModule } from './lobby/lobby.module';
+import { GameModule } from './game/game.module';
 import { User } from './entities/user.entity';
 import { Game } from './entities/game.entity';
 import { Player } from './entities/player.entity';
@@ -15,6 +16,7 @@ import { ScheduleModule } from '@nestjs/schedule';
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
+      envFilePath: ['.env', '.env.local'],
     }),
     TypeOrmModule.forRoot({
       type: 'postgres',
@@ -25,12 +27,19 @@ import { ScheduleModule } from '@nestjs/schedule';
         rejectUnauthorized: false
       },
       extra: {
-        max: 20,
-        idleTimeoutMillis: 30000,
-        connectionTimeoutMillis: 2000,
-      }
+        max: 1,
+        idleTimeoutMillis: 10000,
+        connectTimeoutMS: 5000,
+        keepalive: true,
+        keepaliveInitialDelayMillis: 10000
+      },
+      poolSize: 1,
+      connectTimeoutMS: 5000,
+      maxQueryExecutionTime: 5000,
+      autoLoadEntities: true
     }),
     LobbyModule,
+    GameModule,
     ScheduleModule.forRoot(),
   ],
   controllers: [AppController],

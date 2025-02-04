@@ -2,59 +2,59 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Game } from '../entities/game.entity';
-import { Socket } from 'socket.io';
+import { Player } from '../entities/player.entity';
 
 @Injectable()
 export class GameService {
-  private gameConnections = new Map<string, Map<string, Socket>>();
-
   constructor(
     @InjectRepository(Game)
-    private gameRepository: Repository<Game>,
+    private gameRepo: Repository<Game>,
+    @InjectRepository(Player)
+    private playerRepo: Repository<Player>,
   ) {}
 
-  async joinGame(gameId: string, userId: string, client: Socket) {
-    const game = await this.gameRepository.findOne({
-      where: { id: gameId },
-      relations: ['players'],
-    });
+  async createGame(data: {
+    whiteId: string;
+    blackId: string | null;
+    timeControl: string;
+    mode: string;
+  }): Promise<Game> {
+    const game = this.gameRepo.create({
+      timeControl: data.timeControl,
+      mode: data.mode,
+      status: 'active' as const,
+      fen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
+      whiteId: data.whiteId,
+      blackId: data.blackId || null,
+    } as Partial<Game>);
 
-    if (!game) {
-      throw new Error('Game not found');
+    await this.gameRepo.save(game);
+
+    // Create players
+    const players = [
+      this.playerRepo.create({
+        userId: data.whiteId,
+        color: 'white',
+        game,
+      })
+    ];
+
+    if (data.blackId) {
+      players.push(
+        this.playerRepo.create({
+          userId: data.blackId,
+          color: 'black',
+          game,
+        })
+      );
     }
 
-    // Store connection
-    if (!this.gameConnections.has(gameId)) {
-      this.gameConnections.set(gameId, new Map());
-    }
-    this.gameConnections.get(gameId)?.set(userId, client);
-
-    // Send initial game state
-    client.emit('game_state', {
-      type: 'game_state',
-      state: game,
-    });
-
+    await this.playerRepo.save(players);
     return game;
   }
 
-  async leaveGame(client: Socket) {
-    // Clean up connection
-    for (const [gameId, connections] of this.gameConnections.entries()) {
-      for (const [userId, socket] of connections.entries()) {
-        if (socket === client) {
-          connections.delete(userId);
-          if (connections.size === 0) {
-            this.gameConnections.delete(gameId);
-          }
-          break;
-        }
-      }
-    }
-  }
-
-  async makeMove(gameId: string, userId: string, move: any) {
-    const game = await this.gameRepository.findOne({
+  async getGameState(gameId: string) {
+    const game = await this.gameRepo.findOne({
       where: { id: gameId },
       relations: ['players'],
     });
@@ -63,36 +63,58 @@ export class GameService {
       throw new Error('Game not found');
     }
 
-    // Validate move
-    // Update game state
-    game.fen = move.fen;
-    await this.gameRepository.save(game);
+    const white = game.players.find(p => p.color === 'white');
+    const black = game.players.find(p => p.color === 'black');
 
-    // Broadcast move to all players
-    const connections = this.gameConnections.get(gameId);
-    if (connections) {
-      for (const socket of connections.values()) {
-        socket.emit('move', {
-          type: 'move',
-          move,
-        });
-      }
+    return {
+      id: game.id,
+      fen: game.fen,
+      status: game.status,
+      mode: game.mode,
+      timeControl: game.timeControl,
+      players: {
+        white: white?.userId || null,
+        black: black?.userId || null,
+      },
+      turn: game.fen.split(' ')[1] as 'w' | 'b',
+    };
+  }
+
+  async makeMove(gameId: string, userId: string, move: any) {
+    // Implement move logic
+    return this.getGameState(gameId);
+  }
+
+  async getActiveGames(): Promise<Game[]> {
+    return this.gameRepo.find({
+      where: {
+        status: 'active', // Add this status field to your Game entity if not exists
+      },
+      relations: ['players'],
+    });
+  }
+
+  async joinGame(gameId: string, userId: string) {
+    const game = await this.gameRepo.findOne({
+      where: { id: gameId },
+      relations: ['players'],
+    });
+
+    if (!game) {
+      throw new Error('Game not found');
     }
+
+    // Add player logic here
+    game.status = 'active';
+    await this.gameRepo.save(game);
+    return game;
+  }
+
+  async leaveGame(gameId: string, userId: string) {
+    // Remove player logic here
   }
 
   async sendMessage(gameId: string, userId: string, text: string) {
-    const connections = this.gameConnections.get(gameId);
-    if (connections) {
-      for (const socket of connections.values()) {
-        socket.emit('message', {
-          type: 'message',
-          message: {
-            text,
-            userId,
-            timestamp: Date.now(),
-          },
-        });
-      }
-    }
+    // Message logic here
   }
 } 
