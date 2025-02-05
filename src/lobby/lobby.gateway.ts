@@ -13,7 +13,7 @@ import { LobbyService } from './lobby.service';
 import { UseGuards } from '@nestjs/common';
 import { WsAuthGuard } from '../auth/ws-auth.guard';
 import { CreateLobbyDto } from './dto/create-lobby.dto';
-import * as Ably from 'ably';
+import { createClient } from '@supabase/supabase-js';
 import { ConfigService } from '@nestjs/config';
 
 @Injectable()
@@ -34,8 +34,7 @@ export class LobbyGateway implements OnGatewayConnection, OnGatewayDisconnect, O
   server: Server;
 
   private readonly logger = new Logger(LobbyGateway.name);
-  private ably: Ably.Realtime;
-  private channel: Ably.RealtimeChannel;
+  private supabase: any;
 
   constructor(
     private configService: ConfigService,
@@ -44,243 +43,59 @@ export class LobbyGateway implements OnGatewayConnection, OnGatewayDisconnect, O
 
   async onModuleInit() {
     try {
-      const ablyKey = this.configService.get<string>('ABLY_API_KEY');
-      if (!ablyKey) {
-        throw new Error('ABLY_API_KEY not configured');
+      const supabaseUrl = this.configService.get<string>('SUPABASE_URL');
+      const supabaseKey = this.configService.get<string>('SUPABASE_SERVICE_ROLE_KEY');
+      
+      if (!supabaseUrl || !supabaseKey) {
+        throw new Error('Supabase configuration missing');
       }
 
-      this.ably = new Ably.Realtime({
-        key: ablyKey,
-        clientId: 'lobby-gateway',
-        logLevel: 4,
-        disconnectedRetryTimeout: 15000,
-        suspendedRetryTimeout: 30000,
-        httpRequestTimeout: 15000,
-        realtimeRequestTimeout: 15000,
-        autoConnect: true,
-        recover: function(lastConnectionDetails, cb) { cb(true); }
-      });
-
-      // Wait for connection and channel attachment
-      await new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          reject(new Error('Connection timeout'));
-        }, 30000);
-
-        this.ably.connection.once('connected', async () => {
-          this.logger.log('Connected to Ably');
-          
-          try {
-            this.channel = this.ably.channels.get('lobby');
-            await new Promise<void>((resolveChannel, rejectChannel) => {
-              this.channel.once('attached', () => {
-                this.logger.log('Channel attached successfully');
-                resolveChannel();
-              });
-
-              this.channel.once('failed', (err) => {
-                rejectChannel(new Error(`Channel attachment failed: ${err}`));
-              });
-
-              this.channel.attach();
-            });
-
-            clearTimeout(timeout);
-            resolve();
-          } catch (err) {
-            reject(err);
-          }
-        });
-
-        this.ably.connection.once('failed', (err) => {
-          clearTimeout(timeout);
-          reject(new Error(`Connection failed: ${err}`));
-        });
-      });
-
-      this.setupChannelHandlers();
+      this.supabase = createClient(supabaseUrl, supabaseKey);
+      this.setupRealtimeSubscriptions();
+      
+      this.logger.log('Supabase Realtime initialized');
     } catch (error) {
-      this.logger.error('Failed to initialize Ably:', error);
+      this.logger.error('Failed to initialize Supabase:', error);
       throw error;
     }
   }
 
-  private setupChannelHandlers() {
-    // Presence logging
-    this.channel.presence.subscribe('enter', (member) => {
-      this.logger.log(`Member entered: ${member.clientId}`, {
-        userId: member.data?.userId,
-        timestamp: new Date().toISOString()
-      });
-    });
-
-    this.channel.presence.subscribe('leave', async (member) => {
-      this.logger.log(`Member left: ${member.clientId}`, {
-        userId: member.data?.userId,
-        timestamp: new Date().toISOString()
-      });
-      await this.handleUserDisconnect(member.clientId);
-    });
-
-    // Message handlers with detailed logging
-    this.channel.subscribe('get_lobbies', async (message) => {
-      this.logger.log('Received get_lobbies request');
-
-      try {
-        const lobbies = await this.lobbyService.getAllLobbies();
-        this.logger.log(`Fetched ${lobbies.length} lobbies`);
-
-        // Explicitly format the message data with game info
-        const messageData = {
-          action: 'lobbies_update',
-          data: {
-            lobbies: lobbies.map(lobby => ({
-              id: lobby.id,
-              hostId: lobby.hostId,
-              hostName: lobby.hostName || 'Unknown',
-              mode: lobby.mode,
-              timeControl: lobby.timeControl,
-              status: lobby.status,
-              createdAt: lobby.createdAt,
-              expiresAt: lobby.expiresAt,
-              gameId: (lobby as any).gameId  // Type assertion for now until entity is updated
-            }))
+  private setupRealtimeSubscriptions() {
+    this.supabase
+      .channel('lobby_updates')
+      .on('postgres_changes', 
+        { event: '*', schema: 'public', table: 'lobbies' },
+        async (payload: any) => {
+          try {
+            const lobbies = await this.lobbyService.getAllLobbies();
+            await this.broadcastLobbies(lobbies);
+          } catch (error) {
+            this.logger.error('Error handling lobby update:', error);
           }
-        };
+        }
+      )
+      .subscribe();
+  }
 
-        await this.channel.publish('lobbies_update', messageData);
-        this.logger.log('Published lobbies_update successfully');
-      } catch (error) {
-        this.logger.error('Error handling get_lobbies:', error);
-        await this.channel.publish('error', {
-          type: 'GET_LOBBIES_ERROR',
-          message: error.message
-        });
+  private async broadcastLobbies(lobbies: any[]) {
+    const channel = this.supabase.channel('lobby_broadcasts');
+    await channel.send({
+      type: 'broadcast',
+      event: 'lobbies_update',
+      payload: {
+        lobbies: lobbies.map(lobby => ({
+          id: lobby.id,
+          hostId: lobby.hostId,
+          hostName: lobby.hostName || 'Unknown',
+          mode: lobby.mode,
+          timeControl: lobby.timeControl,
+          status: lobby.status,
+          createdAt: lobby.createdAt,
+          expiresAt: lobby.expiresAt,
+          gameId: lobby.gameId
+        }))
       }
     });
-
-    // Add error handling for channel state
-    this.channel.once('attached', () => {
-      this.logger.log('Channel attached');
-    });
-
-    this.channel.once('detached', () => {
-      this.logger.warn('Channel detached');
-    });
-
-    this.channel.once('failed', () => {
-      this.logger.error('Channel failed');
-    });
-
-    this.channel.subscribe('create_lobby', async (message) => {
-      this.logger.log('Received create_lobby request', {
-        userId: message.data?.userId,
-        data: message.data,
-        timestamp: new Date().toISOString()
-      });
-
-      try {
-        const { userId, data } = message.data;
-        const lobby = await this.lobbyService.createLobby(userId, data);
-        
-        this.logger.log('Lobby created successfully', {
-          lobbyId: lobby.id,
-          userId,
-          timestamp: new Date().toISOString()
-        });
-
-        await this.channel.publish('lobby_created', lobby);
-      } catch (error) {
-        this.logger.error('Create lobby error:', {
-          error: error.message,
-          stack: error.stack,
-          userId: message.data?.userId,
-          timestamp: new Date().toISOString()
-        });
-        
-        await this.channel.publish('error', { 
-          type: 'CREATE_LOBBY_ERROR',
-          message: error.message 
-        });
-      }
-    });
-
-    this.channel.subscribe('join_lobby', async (message) => {
-      this.logger.log('Received join_lobby request', {
-        userId: message.data?.userId,
-        lobbyId: message.data?.lobbyId,
-        timestamp: new Date().toISOString()
-      });
-
-      try {
-        const { userId, lobbyId } = message.data;
-        const game = await this.lobbyService.joinLobby(userId, lobbyId);
-        
-        this.logger.log('Game created from lobby join', {
-          gameId: game.id,
-          lobbyId,
-          userId,
-          timestamp: new Date().toISOString()
-        });
-
-        // Publish game creation event
-        await this.channel.publish('game_created', { gameId: game.id });
-        this.logger.log('Published game_created event', {
-          gameId: game.id,
-          timestamp: new Date().toISOString()
-        });
-        
-        // Remove the lobby since a game was created
-        await this.channel.publish('lobby_removed', { lobbyId });
-        this.logger.log('Published lobby_removed event', {
-          lobbyId,
-          timestamp: new Date().toISOString()
-        });
-      } catch (error) {
-        this.logger.error('Join lobby error:', {
-          error: error.message,
-          stack: error.stack,
-          userId: message.data?.userId,
-          lobbyId: message.data?.lobbyId,
-          timestamp: new Date().toISOString()
-        });
-        
-        await this.channel.publish('error', {
-          type: 'JOIN_LOBBY_ERROR',
-          message: error.message
-        });
-      }
-    });
-
-    this.channel.subscribe('terminate_lobby', async (message) => {
-      try {
-        const { userId, lobbyId } = message.data;
-        await this.lobbyService.terminateLobby(lobbyId, userId);
-        await this.channel.publish('lobby_terminated', { lobbyId });
-      } catch (error) {
-        this.logger.error('Terminate lobby error:', error);
-        await this.channel.publish('error', { 
-          type: 'TERMINATE_LOBBY_ERROR',
-          message: error.message 
-        });
-      }
-    });
-
-    this.channel.subscribe('initiate_game', async (message) => {
-      try {
-        const { userId, lobbyId } = message.data;
-        const game = await this.lobbyService.initiateGame(lobbyId, userId);
-        await this.channel.publish('game_created', { gameId: game.id });
-      } catch (error) {
-        this.logger.error('Initiate game error:', error);
-        await this.channel.publish('error', { 
-          type: 'INITIATE_GAME_ERROR',
-          message: error.message 
-        });
-      }
-    });
-
-    this.logger.log('LobbyGateway initialized successfully');
   }
 
   async handleConnection(client: Socket) {
@@ -302,7 +117,6 @@ export class LobbyGateway implements OnGatewayConnection, OnGatewayDisconnect, O
           lobbyId: lobby.id
         });
         await this.lobbyService.removeLobby(lobby.id);
-        await this.channel.publish('lobby_removed', { lobbyId: lobby.id });
       }
       await this.lobbyService.removeConnection(userId);
     } catch (error) {
@@ -371,16 +185,6 @@ export class LobbyGateway implements OnGatewayConnection, OnGatewayDisconnect, O
     const userId = client.handshake.query.userId as string;
     if (userId) {
       await this.handleUserDisconnect(userId);
-    }
-  }
-
-  private async notifyLobbyUpdate() {
-    try {
-      const lobbies = await this.lobbyService.getAllLobbies();
-      const channel = this.ably.channels.get('lobby');
-      await channel.publish('lobbies_update', { lobbies });
-    } catch (error) {
-      this.logger.error('Failed to notify lobby update:', error);
     }
   }
 } 

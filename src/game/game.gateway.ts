@@ -1,143 +1,80 @@
 import { Injectable, OnModuleInit, Logger } from '@nestjs/common';
-import * as Ably from 'ably';
 import { ConfigService } from '@nestjs/config';
+import { createClient } from '@supabase/supabase-js';
 import { GameService } from './game.service';
 
 @Injectable()
 export class GameGateway implements OnModuleInit {
   private readonly logger = new Logger(GameGateway.name);
-  private ably: Ably.Realtime;
+  private supabase: any;
 
   constructor(
     private configService: ConfigService,
     private gameService: GameService,
-  ) {
-    const ablyKey = this.configService.get<string>('ABLY_API_KEY');
-    if (!ablyKey) {
-      this.logger.error('Ably API key not configured');
-      return;
-    }
+  ) {}
 
+  async onModuleInit() {
     try {
-      this.ably = new Ably.Realtime({
-        key: ablyKey,
-        clientId: 'game-gateway'
-      });
+      const supabaseUrl = this.configService.get<string>('SUPABASE_URL');
+      const supabaseKey = this.configService.get<string>('SUPABASE_SERVICE_ROLE_KEY');
+      
+      if (!supabaseUrl || !supabaseKey) {
+        throw new Error('Supabase configuration missing');
+      }
+
+      this.supabase = createClient(supabaseUrl, supabaseKey);
+      this.setupRealtimeSubscriptions();
+      
+      this.logger.log('Supabase Realtime initialized for games');
     } catch (error) {
-      this.logger.error('Failed to initialize Ably client:', error);
+      this.logger.error('Failed to initialize Supabase:', error);
+      throw error;
     }
   }
 
-  onModuleInit() {
-    if (!this.ably) {
-      this.logger.error('Ably client not initialized');
-      return;
-    }
+  private setupRealtimeSubscriptions() {
+    this.supabase
+      .channel('game_updates')
+      .on('postgres_changes', 
+        { event: '*', schema: 'public', table: 'games' },
+        async (payload: any) => {
+          try {
+            const game = await this.gameService.findGameById(payload.new.id);
+            await this.broadcastGameUpdate(game);
+          } catch (error) {
+            this.logger.error('Error handling game update:', error);
+          }
+        }
+      )
+      .subscribe();
+  }
 
-    const gameChannel = this.ably.channels.get('game:*');
-    
-    gameChannel.subscribe((message) => {
-      this.handleMessage(gameChannel, message).catch(error => {
-        this.logger.error('Error handling message:', error);
-      });
+  private async broadcastGameUpdate(game: any) {
+    const channel = this.supabase.channel('game_broadcasts');
+    await channel.send({
+      type: 'broadcast',
+      event: 'game_update',
+      payload: {
+        id: game.id,
+        fen: game.fen,
+        turn: game.turn,
+        status: game.status,
+        winner: game.winner,
+        players: game.players,
+        timeControl: game.timeControl,
+        mode: game.mode
+      }
     });
   }
 
-  private async handleMessage(channel: Ably.RealtimeChannel, message: Ably.Message) {
+  async handleMove(gameId: string, userId: string, move: any) {
     try {
-      const channelName = channel.name;
-      const gameId = channelName.split(':')[1];
-
-      if (!gameId) {
-        this.logger.error('Invalid channel name format:', channelName);
-        return;
-      }
-
-      if (!message.name) {
-        this.logger.error('Message has no name:', message);
-        return;
-      }
-
-      switch (message.name) {
-        case 'move':
-          await this.handleMove(gameId, message.data);
-          break;
-        case 'join':
-          await this.handleJoin(gameId, message.data);
-          break;
-        case 'leave':
-          await this.handleLeave(gameId, message.data);
-          break;
-        case 'message':
-          await this.handleGameMessage(gameId, message.data);
-          break;
-        case 'get_active_games':
-          try {
-            const activeGames = await this.gameService.getActiveGames();
-            channel.publish('active_games', { games: activeGames });
-          } catch (error) {
-            this.logger.error('Failed to get active games:', error);
-          }
-          break;
-        case 'get_game_state':
-          try {
-            const game = await this.gameService.getGameState(gameId);
-            channel.publish('game_state', game);
-          } catch (error) {
-            this.logger.error('Failed to get game state:', error);
-          }
-          break;
-      }
+      const game = await this.gameService.makeMove(gameId, userId, move);
+      await this.broadcastGameUpdate(game);
+      return game;
     } catch (error) {
-      this.logger.error('Error handling game message:', error);
-    }
-  }
-
-  private async handleMove(gameId: string, data: any) {
-    try {
-      const { userId, move } = data;
-      const gameState = await this.gameService.makeMove(gameId, userId, move);
-      
-      const channel = this.ably.channels.get(`game:${gameId}`);
-      channel.publish('move_made', gameState);
-    } catch (error) {
-      this.logger.error('Move error:', error);
-    }
-  }
-
-  private async handleJoin(gameId: string, data: any) {
-    try {
-      const { userId } = data;
-      await this.gameService.joinGame(gameId, userId);
-      
-      const channel = this.ably.channels.get(`game:${gameId}`);
-      channel.publish('player_joined', { userId });
-    } catch (error) {
-      this.logger.error('Join error:', error);
-    }
-  }
-
-  private async handleLeave(gameId: string, data: any) {
-    try {
-      const { userId } = data;
-      await this.gameService.leaveGame(gameId, userId);
-      
-      const channel = this.ably.channels.get(`game:${gameId}`);
-      channel.publish('player_left', { userId });
-    } catch (error) {
-      this.logger.error('Leave error:', error);
-    }
-  }
-
-  private async handleGameMessage(gameId: string, data: any) {
-    try {
-      const { userId, text } = data;
-      await this.gameService.sendMessage(gameId, userId, text);
-      
-      const channel = this.ably.channels.get(`game:${gameId}`);
-      channel.publish('message_sent', { userId, text });
-    } catch (error) {
-      this.logger.error('Message error:', error);
+      this.logger.error('Error handling move:', error);
+      throw error;
     }
   }
 } 

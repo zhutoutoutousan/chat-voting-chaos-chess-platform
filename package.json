@@ -29,6 +29,7 @@
     "@nestjs/schedule": "^5.0.1",
     "@nestjs/typeorm": "^11.0.0",
     "@nestjs/websockets": "^11.0.7",
+    "@supabase/supabase-js": "^2.48.1",
     "@types/jsonwebtoken": "^9.0.8",
     "ably": "^2.6.3",
     "jsonwebtoken": "^9.0.2",
