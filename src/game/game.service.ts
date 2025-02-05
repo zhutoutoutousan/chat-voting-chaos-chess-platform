@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Game } from '../entities/game.entity';
@@ -116,5 +116,18 @@ export class GameService {
 
   async sendMessage(gameId: string, userId: string, text: string) {
     // Message logic here
+  }
+
+  async findGameById(id: string) {
+    const game = await this.gameRepo.findOne({
+      where: { id },
+      relations: ['players']
+    });
+    
+    if (!game) {
+      throw new NotFoundException(`Game with ID ${id} not found`);
+    }
+    
+    return game;
   }
 } 
