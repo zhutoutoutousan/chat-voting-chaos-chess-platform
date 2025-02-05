@@ -52,25 +52,52 @@ export class LobbyGateway implements OnGatewayConnection, OnGatewayDisconnect, O
       this.ably = new Ably.Realtime({
         key: ablyKey,
         clientId: 'lobby-gateway',
-        logLevel: 4
+        logLevel: 4,
+        disconnectedRetryTimeout: 15000,
+        suspendedRetryTimeout: 30000,
+        httpRequestTimeout: 15000,
+        realtimeRequestTimeout: 15000,
+        autoConnect: true,
+        recover: function(lastConnectionDetails, cb) { cb(true); }
       });
 
-      // Wait for connection to be established
+      // Wait for connection and channel attachment
       await new Promise<void>((resolve, reject) => {
-        this.ably.connection.once('connected', () => {
+        const timeout = setTimeout(() => {
+          reject(new Error('Connection timeout'));
+        }, 30000);
+
+        this.ably.connection.once('connected', async () => {
           this.logger.log('Connected to Ably');
-          resolve();
-        });
-        
-        this.ably.connection.once('failed', (err: any) => {
-          reject(new Error(err.toString()));
+          
+          try {
+            this.channel = this.ably.channels.get('lobby');
+            await new Promise<void>((resolveChannel, rejectChannel) => {
+              this.channel.once('attached', () => {
+                this.logger.log('Channel attached successfully');
+                resolveChannel();
+              });
+
+              this.channel.once('failed', (err) => {
+                rejectChannel(new Error(`Channel attachment failed: ${err}`));
+              });
+
+              this.channel.attach();
+            });
+
+            clearTimeout(timeout);
+            resolve();
+          } catch (err) {
+            reject(err);
+          }
         });
 
-        // Set a connection timeout
-        setTimeout(() => reject(new Error('Ably connection timeout')), 10000);
+        this.ably.connection.once('failed', (err) => {
+          clearTimeout(timeout);
+          reject(new Error(`Connection failed: ${err}`));
+        });
       });
 
-      this.channel = this.ably.channels.get('lobby');
       this.setupChannelHandlers();
     } catch (error) {
       this.logger.error('Failed to initialize Ably:', error);
