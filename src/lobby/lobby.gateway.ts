@@ -97,38 +97,37 @@ export class LobbyGateway implements OnGatewayConnection, OnGatewayDisconnect, O
 
     // Message handlers with detailed logging
     this.channel.subscribe('get_lobbies', async (message) => {
-      this.logger.log('Received get_lobbies request', {
-        connectionId: message.connectionId,
-        clientId: message.clientId,
-        timestamp: new Date().toISOString()
-      });
+      this.logger.log('Received get_lobbies request');
 
       try {
         const lobbies = await this.lobbyService.getAllLobbies();
-        this.logger.log('Fetched lobbies, attempting to publish', {
-          count: lobbies.length
-        });
+        this.logger.log(`Fetched ${lobbies.length} lobbies`);
 
-        // Add error handling and confirmation for publish
-        await new Promise((resolve) => {
-          this.channel.publish('lobbies_update', { lobbies });
-          resolve(true);
-        });
+        // Explicitly format the message data
+        const messageData = {
+          action: 'lobbies_update',
+          data: {
+            lobbies: lobbies.map(lobby => ({
+              id: lobby.id,
+              hostId: lobby.hostId,
+              hostName: lobby.hostName || 'Unknown',
+              mode: lobby.mode,
+              timeControl: lobby.timeControl,
+              status: lobby.status,
+              createdAt: lobby.createdAt,
+              expiresAt: lobby.expiresAt
+            }))
+          }
+        };
+
+        await this.channel.publish('lobbies_update', messageData);
+        this.logger.log('Published lobbies_update successfully');
       } catch (error) {
-        this.logger.error('Error in get_lobbies handler:', {
-          error: error.message,
-          stack: error.stack
+        this.logger.error('Error handling get_lobbies:', error);
+        await this.channel.publish('error', {
+          type: 'GET_LOBBIES_ERROR',
+          message: error.message
         });
-        
-        // Ensure error is published back to client
-        try {
-          await this.channel.publish('error', { 
-            type: 'GET_LOBBIES_ERROR',
-            message: error.message 
-          });
-        } catch (publishError) {
-          this.logger.error('Failed to publish error:', publishError);
-        }
       }
     });
 
