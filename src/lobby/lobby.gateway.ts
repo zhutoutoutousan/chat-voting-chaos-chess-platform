@@ -38,50 +38,47 @@ export class LobbyGateway implements OnGatewayConnection, OnGatewayDisconnect, O
   private channel: Ably.RealtimeChannel;
 
   constructor(
-    private readonly lobbyService: LobbyService,
-    private configService: ConfigService
-  ) {
-    const ablyKey = this.configService.get<string>('ABLY_API_KEY');
-    if (!ablyKey) {
-      this.logger.error('Ably API key not configured');
-      return;
-    }
+    private configService: ConfigService,
+    private lobbyService: LobbyService,
+  ) {}
 
+  async onModuleInit() {
     try {
+      const ablyKey = this.configService.get<string>('ABLY_API_KEY');
+      if (!ablyKey) {
+        throw new Error('ABLY_API_KEY not configured');
+      }
+
       this.ably = new Ably.Realtime({
         key: ablyKey,
         clientId: 'lobby-gateway',
-        logLevel: 4 // Enable detailed Ably logs
+        logLevel: 4
       });
 
-      this.logger.log('Ably client created');
+      // Wait for connection to be established
+      await new Promise<void>((resolve, reject) => {
+        this.ably.connection.once('connected', () => {
+          this.logger.log('Connected to Ably');
+          resolve();
+        });
+        
+        this.ably.connection.once('failed', (err: any) => {
+          reject(new Error(err.toString()));
+        });
+
+        // Set a connection timeout
+        setTimeout(() => reject(new Error('Ably connection timeout')), 10000);
+      });
+
+      this.channel = this.ably.channels.get('lobby');
+      this.setupChannelHandlers();
     } catch (error) {
-      this.logger.error('Failed to initialize Ably client:', error);
+      this.logger.error('Failed to initialize Ably:', error);
+      throw error;
     }
   }
 
-  onModuleInit() {
-    if (!this.ably) {
-      this.logger.error('Ably client not initialized');
-      return;
-    }
-
-    this.logger.log('Initializing LobbyGateway...');
-    this.channel = this.ably.channels.get('lobby');
-    
-    // Log connection state changes
-    this.ably.connection.on('connected', () => {
-      this.logger.log('Connected to Ably');
-    });
-
-    this.ably.connection.on('disconnected', () => {
-      this.logger.warn('Disconnected from Ably');
-    });
-
-    this.ably.connection.on('failed', (err) => {
-      this.logger.error('Ably connection failed:', err);
-    });
-
+  private setupChannelHandlers() {
     // Presence logging
     this.channel.presence.subscribe('enter', (member) => {
       this.logger.log(`Member entered: ${member.clientId}`, {
@@ -103,42 +100,49 @@ export class LobbyGateway implements OnGatewayConnection, OnGatewayDisconnect, O
       this.logger.log('Received get_lobbies request', {
         connectionId: message.connectionId,
         clientId: message.clientId,
-        timestamp: new Date().toISOString(),
-        data: message.data
+        timestamp: new Date().toISOString()
       });
 
       try {
         const lobbies = await this.lobbyService.getAllLobbies();
-        this.logger.log('Fetched active lobbies', {
-          count: lobbies.length,
-          lobbies: lobbies.map(l => ({ 
-            id: l.id, 
-            status: l.status,
-            hostId: l.hostId,
-            createdAt: l.createdAt 
-          }))
+        this.logger.log('Fetched lobbies, attempting to publish', {
+          count: lobbies.length
         });
 
-        // Log the exact data we're publishing
-        const publishData = { lobbies };
-        this.logger.log('Publishing lobbies_update', {
-          data: publishData,
-          timestamp: new Date().toISOString()
+        // Add error handling and confirmation for publish
+        await new Promise((resolve) => {
+          this.channel.publish('lobbies_update', { lobbies });
+          resolve(true);
         });
-
-        await this.channel.publish('lobbies_update', publishData);
       } catch (error) {
-        this.logger.error('Error fetching lobbies:', {
+        this.logger.error('Error in get_lobbies handler:', {
           error: error.message,
-          stack: error.stack,
-          timestamp: new Date().toISOString()
+          stack: error.stack
         });
         
-        await this.channel.publish('error', { 
-          message: 'Failed to fetch lobbies',
-          error: error.message 
-        });
+        // Ensure error is published back to client
+        try {
+          await this.channel.publish('error', { 
+            type: 'GET_LOBBIES_ERROR',
+            message: error.message 
+          });
+        } catch (publishError) {
+          this.logger.error('Failed to publish error:', publishError);
+        }
       }
+    });
+
+    // Add error handling for channel state
+    this.channel.once('attached', () => {
+      this.logger.log('Channel attached');
+    });
+
+    this.channel.once('detached', () => {
+      this.logger.warn('Channel detached');
+    });
+
+    this.channel.once('failed', () => {
+      this.logger.error('Channel failed');
     });
 
     this.channel.subscribe('create_lobby', async (message) => {
