@@ -103,7 +103,7 @@ export class LobbyGateway implements OnGatewayConnection, OnGatewayDisconnect, O
         const lobbies = await this.lobbyService.getAllLobbies();
         this.logger.log(`Fetched ${lobbies.length} lobbies`);
 
-        // Explicitly format the message data
+        // Explicitly format the message data with game info
         const messageData = {
           action: 'lobbies_update',
           data: {
@@ -115,7 +115,8 @@ export class LobbyGateway implements OnGatewayConnection, OnGatewayDisconnect, O
               timeControl: lobby.timeControl,
               status: lobby.status,
               createdAt: lobby.createdAt,
-              expiresAt: lobby.expiresAt
+              expiresAt: lobby.expiresAt,
+              gameId: (lobby as any).gameId  // Type assertion for now until entity is updated
             }))
           }
         };
